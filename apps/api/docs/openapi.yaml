@@ -1,0 +1,937 @@
+openapi: 3.1.0
+info:
+  title: ShopSmart Commerce API
+  version: 0.1.0
+  description: PostgreSQL-backed product catalog, customer identity, seller applications, seller administration, and public storefront API. Checkout and payment routes are not implemented.
+servers:
+  - url: http://localhost:4000
+paths:
+  /api/v1/auth/register:
+    post:
+      summary: Register a customer account
+      description: Always creates a CUSTOMER account; client-supplied roles are ignored. Sets a secure httpOnly refresh cookie and returns a short-lived access token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 12, maxLength: 128 }
+                displayName: { type: string, minLength: 2, maxLength: 80 }
+      responses:
+        "201": { description: Customer account created }
+        "400": { description: Input validation failed }
+        "409": { description: Account already exists }
+        "503": { description: Authentication secret is not configured }
+  /api/v1/auth/login:
+    post:
+      summary: Sign in with email and password
+      responses:
+        "200": { description: Access token and user profile returned; refresh cookie set }
+        "400": { description: Input validation failed }
+        "401": { description: Credentials did not match }
+        "503": { description: Authentication secret is not configured }
+  /api/v1/auth/refresh:
+    post:
+      summary: Rotate the refresh session and issue a new access token
+      responses:
+        "200": { description: Session rotated }
+        "401": { description: Refresh session is missing, invalid, or expired }
+  /api/v1/auth/logout:
+    post:
+      summary: Revoke the current refresh session
+      responses:
+        "204": { description: Session revoked and cookie cleared }
+  /api/v1/auth/me:
+    get:
+      summary: Get the authenticated user's profile
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Authenticated user profile and email verification state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: "#/components/schemas/AuthUser" }
+        "401": { description: Access token missing or invalid }
+    patch:
+      summary: Update the authenticated user's display name
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              properties:
+                displayName: { type: string, minLength: 2, maxLength: 80 }
+      responses:
+        "200": { description: Updated account profile }
+        "400": { description: Profile validation failed }
+        "401": { description: Access token missing or invalid }
+  /api/v1/auth/users/{userId}:
+    get:
+      summary: Get the current user's profile or a profile accessible to administrators
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Account profile }
+        "401": { description: Access token missing or invalid }
+        "403": { description: Caller does not own this profile and lacks an administrator role }
+        "404": { description: Account not found }
+  /api/v1/auth/admin/users:
+    get:
+      summary: List account profiles for administrators
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Account profiles; restricted to ADMIN and SUPER_ADMIN }
+        "401": { description: Access token missing or invalid }
+        "403": { description: Administrator role required }
+  /api/v1/auth/email/verification:
+    post:
+      summary: Send a one-time email verification link
+      security:
+        - bearerAuth: []
+      responses:
+        "202": { description: Verification email accepted for delivery }
+        "409": { description: Email is already verified }
+        "503": { description: Email delivery is not configured or unavailable }
+  /api/v1/auth/email/verify:
+    post:
+      summary: Consume an email verification token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 256 }
+      responses:
+        "200": { description: Email address verified }
+        "400": { description: Token is invalid, expired or already used }
+  /api/v1/auth/password/forgot:
+    post:
+      summary: Request a password reset email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "202": { description: Generic response that does not disclose whether the account exists }
+        "503": { description: Email delivery is not configured or unavailable }
+  /api/v1/auth/password/reset:
+    post:
+      summary: Consume a single-use password reset token and revoke refresh sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 256 }
+                password: { type: string, minLength: 12, maxLength: 128 }
+      responses:
+        "200": { description: Password updated and active refresh sessions revoked }
+        "400": { description: Token or new password is invalid }
+  /healthz:
+    get:
+      summary: Liveness probe
+      responses:
+        "200":
+          description: API process is responsive
+  /readyz:
+    get:
+      summary: Readiness probe including PostgreSQL
+      responses:
+        "200":
+          description: API and database are ready
+        "503":
+          description: Database is unavailable
+  /api/v1/products:
+    get:
+      summary: List published products
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 100 }
+        - in: query
+          name: category
+          schema: { type: string, maxLength: 80 }
+        - in: query
+          name: seller
+          description: Seller slug.
+          schema: { type: string, maxLength: 80 }
+        - in: query
+          name: minPriceMinor
+          description: Inclusive minimum price in minor currency units (paise for INR).
+          schema: { type: integer, minimum: 0, maximum: 2000000000 }
+        - in: query
+          name: maxPriceMinor
+          description: Inclusive maximum price in minor currency units (paise for INR).
+          schema: { type: integer, minimum: 0, maximum: 2000000000 }
+        - in: query
+          name: available
+          description: Filter products by active-variant stock availability.
+          schema: { type: boolean }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        - in: query
+          name: sort
+          schema: { type: string, enum: [newest, price-asc, price-desc, rating] }
+      responses:
+        "200":
+          description: Published catalog page and pagination details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductListResponse" }
+        "400":
+          description: Query validation failed
+        "500":
+          description: Request failed
+  /api/v1/products/categories:
+    get:
+      summary: List categories with published product counts
+      responses:
+        "200":
+          description: Categories currently represented in the published catalog
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductCategoriesResponse" }
+  /api/v1/products/{slug}:
+    get:
+      summary: Get the latest published product details by slug
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 120 }
+      responses:
+        "200":
+          description: Product, variant, stock, price, image and review summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [item]
+                properties:
+                  item: { $ref: "#/components/schemas/CatalogProduct" }
+        "404": { description: No published product has this slug }
+  /api/v1/seller/products/categories:
+    get:
+      summary: List all product categories available to an approved seller
+      description: Includes categories with no public or published products.
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Seller-accessible category identifiers, names, slugs and parent identifiers }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+  /api/v1/seller/products/variants/{variantId}/adjustments:
+    post:
+      summary: Atomically adjust stock and append an immutable inventory ledger entry
+      description: PostgreSQL row locking serializes adjustments for the same variant. CORRECTION, DAMAGE and OTHER require a note.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: variantId
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SellerInventoryAdjustmentInput" }
+      responses:
+        "201": { description: Stock updated and adjustment history recorded atomically }
+        "400": { description: Invalid reason, note, quantity or resulting stock }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+        "404": { description: Variant not found or not owned by this seller }
+  /api/v1/seller/products/variants/{variantId}/low-stock-threshold:
+    patch:
+      summary: Configure the low-stock threshold for an owned variant
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: variantId
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SellerLowStockThresholdInput" }
+      responses:
+        "200": { description: Threshold updated without changing stock }
+        "400": { description: Threshold must be a nonnegative integer }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+        "404": { description: Variant not found or not owned by this seller }
+  /api/v1/seller/products/inventory-adjustments:
+    get:
+      summary: List paginated, read-only adjustment history for an owned product or variant
+      description: Specify productId or variantId. Results are ordered newest first with a stable ID tie-breaker.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: productId
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - in: query
+          name: variantId
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200": { description: Adjustment history page with variant, product and actor summaries }
+        "400": { description: Invalid query or missing productId/variantId }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+        "404": { description: Product or variant not found or not owned by this seller }
+  /api/v1/seller/products/inventory/low-stock:
+    get:
+      summary: List paginated low-stock variants for the authenticated seller
+      description: A variant is low stock when stockOnHand is less than or equal to lowStockThreshold. Difference is stock minus threshold.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200": { description: Seller-scoped low-stock variant page and pagination }
+        "400": { description: Invalid page parameters }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+  /api/v1/admin/products/pending:
+    get:
+      summary: List products awaiting administrator moderation
+      description: Returns only PENDING_REVIEW products with public seller/store summaries and variant summaries.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 100 }
+        - in: query
+          name: categoryId
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - in: query
+          name: listingStatus
+          schema: { type: string, enum: [DRAFT, PUBLISHED, ARCHIVED] }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200": { description: Pending moderation page with seller, category, creation and variant summaries }
+        "400": { description: Invalid filter or page parameters }
+        "401": { description: Access token missing or invalid }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+  /api/v1/admin/products/{productId}:
+    parameters:
+      - in: path
+        name: productId
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 64 }
+    get:
+      summary: Inspect product content and moderation metadata
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Complete product, image, specification, pricing, variant and moderation information; no seller contact details }
+        "400": { description: Invalid product identifier }
+        "401": { description: Access token missing or invalid }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+        "404": { description: Product not found }
+  /api/v1/admin/products/{productId}/approve:
+    post:
+      summary: Approve a product awaiting review
+      description: Only PENDING_REVIEW products can be approved. The authenticated administrator and timestamp are recorded.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note: { type: string, maxLength: 2000 }
+      responses:
+        "200": { description: Product approved and audit event recorded atomically }
+        "400": { description: Invalid request body or product identifier }
+        "401": { description: Access token missing or invalid }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+        "404": { description: Product not found }
+        "409": { description: Product is not awaiting review }
+  /api/v1/admin/products/{productId}/disable:
+    post:
+      summary: Disable a pending or approved product
+      description: A non-empty reason is required. Disabled listings are excluded from the public catalog.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              additionalProperties: false
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 2000 }
+      responses:
+        "200": { description: Product disabled with moderator, timestamp, reason and audit event }
+        "400": { description: Missing or invalid disable reason }
+        "401": { description: Access token missing or invalid }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+        "404": { description: Product not found }
+        "409": { description: Product is already disabled or has an invalid state }
+  /api/v1/admin/products/{productId}/re-review:
+    post:
+      summary: Return a disabled product to pending review
+      description: Explicit administrator-only re-enable transition. The product is not approved until a separate approval action.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note: { type: string, maxLength: 2000 }
+      responses:
+        "200": { description: Product returned to PENDING_REVIEW; a separate approval is required }
+        "400": { description: Invalid request body or product identifier }
+        "401": { description: Access token missing or invalid }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+        "404": { description: Product not found }
+        "409": { description: Only disabled products can be returned to review }
+  /api/v1/seller/products:
+    get:
+      summary: List products owned by the authenticated seller
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [DRAFT, PUBLISHED, ARCHIVED] }
+        - in: query
+          name: moderationStatus
+          schema: { type: string, enum: [PENDING_REVIEW, APPROVED, DISABLED] }
+        - in: query
+          name: categoryId
+          schema: { type: string }
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 100 }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200": { description: Seller-owned product page, variant count, stock summary and pagination }
+        "400": { description: Invalid filter or page parameters }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+    post:
+      summary: Create a draft product pending administrator review
+      description: Initial positive variant stock and its INITIAL_STOCK ledger entry are committed in the same transaction. Moderation and seller ownership fields are not accepted.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SellerProductCreate" }
+      responses:
+        "201": { description: Created seller-owned DRAFT and PENDING_REVIEW product }
+        "400": { description: Invalid product data or category }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+        "409": { description: Product SKU conflict }
+  /api/v1/seller/products/{productId}:
+    parameters:
+      - in: path
+        name: productId
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 64 }
+    get:
+      summary: Get full product details owned by the authenticated seller
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Product, images, specifications, variants, listing and moderation state }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+        "404": { description: Product not found or not owned by this seller }
+    patch:
+      summary: Update selected fields on a seller-owned product
+      description: Provided images or specifications replace that full collection; provided variants update only listed existing variants or append new variants. Existing variant stock and thresholds cannot be changed here. Edits to approved customer-facing content return it to PENDING_REVIEW; DISABLED moderation state and note are preserved.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SellerProductUpdate" }
+      responses:
+        "200": { description: Updated product details }
+        "400": { description: Invalid fields, forbidden moderation fields, or unavailable category }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+        "404": { description: Product or referenced variant not found for this seller }
+        "409": { description: Product SKU conflict }
+    delete:
+      summary: Archive a seller-owned product without deleting its record
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Product status changed to ARCHIVED; product and inventory history retained }
+        "401": { description: Access token missing or invalid }
+        "403": { description: An active, approved seller account is required }
+        "404": { description: Product not found or not owned by this seller }
+        "409": { description: Product is already archived }
+  /api/v1/seller/applications/me:
+    get:
+      summary: Read the authenticated customer's seller application
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: The customer's application, or null when no draft exists }
+        "401": { description: Access token missing or invalid }
+        "403": { description: Customer role required }
+    put:
+      summary: Create or edit the authenticated customer's single seller application draft
+      description: Store names and slugs are unique. Draft changes do not activate seller permissions.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SellerApplicationInput" }
+      responses:
+        "200": { description: Application draft saved }
+        "400": { description: Application validation failed }
+        "403": { description: Customer role required }
+        "409": { description: Store name or URL conflict, or application is locked for review }
+  /api/v1/seller/applications/me/submit:
+    post:
+      summary: Submit the saved application for platform review
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Application moved to SUBMITTED }
+        "401": { description: Access token missing or invalid }
+        "403": { description: Customer role required }
+        "409": { description: Application is not in a submittable status }
+  /api/v1/seller/admin/applications:
+    get:
+      summary: List seller applications for administrators
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [DRAFT, SUBMITTED, UNDER_REVIEW, NEEDS_INFORMATION, APPROVED, REJECTED] }
+      responses:
+        "200": { description: Applications and applicant contact details }
+        "401": { description: Access token missing or invalid }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+  /api/v1/seller/admin/applications/{applicationId}:
+    get:
+      summary: Read an application and its verification history
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: applicationId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Full application details and administrative history }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+        "404": { description: Application not found }
+  /api/v1/seller/admin/applications/{applicationId}/review:
+    post:
+      summary: Review, approve, reject, or request more information for an application
+      description: Approval transactionally creates or activates the seller and assigns SELLER role. Rejection and information requests require a note.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: applicationId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [under-review, needs-information, approve, reject] }
+                note: { type: string, maxLength: 2000 }
+      responses:
+        "200": { description: Application decision recorded }
+        "400": { description: Invalid decision or missing required note }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+        "409": { description: Application state or store identity conflict }
+  /api/v1/seller/admin/sellers:
+    get:
+      summary: List seller accounts backed by approved applications
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Seller account status and owning account details }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+  /api/v1/seller/admin/sellers/{sellerId}/status:
+    patch:
+      summary: Suspend or reactivate an approved seller
+      description: These access actions are limited to sellers with an APPROVED application. Suspension revokes seller role access.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: sellerId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [suspend, reactivate] }
+                note: { type: string, maxLength: 2000 }
+      responses:
+        "200": { description: Seller status and role updated with audit history }
+        "403": { description: ADMIN or SUPER_ADMIN role required }
+        "409": { description: Seller status conflict or approved application required }
+  /api/v1/seller/me:
+    get:
+      summary: Read the authenticated, approved seller dashboard
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Seller's private dashboard data and public profile }
+        "401": { description: Access token missing or invalid }
+        "403": { description: Active approved seller role required }
+    patch:
+      summary: Update the authenticated seller's public store profile and policies
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Seller profile updated }
+        "400": { description: Profile validation failed }
+        "403": { description: Active approved seller role required }
+        "409": { description: Store name or URL conflict }
+  /api/v1/stores/{slug}:
+    get:
+      summary: Read a public verified seller storefront
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string, minLength: 3, maxLength: 80 }
+      responses:
+        "200": { description: Public seller branding, description, contact details, and policies; private application fields are excluded }
+        "404": { description: Store does not exist or is suspended }
+components:
+  schemas:
+    SellerApplicationInput:
+      type: object
+      required: [businessName, storeName, businessType, description, contactEmail, contactPhone, addressLine1, city, state, postalCode, country, slug]
+      properties:
+        businessName: { type: string, minLength: 2, maxLength: 120 }
+        storeName: { type: string, minLength: 2, maxLength: 100 }
+        businessType: { type: string, enum: [INDIVIDUAL, PARTNERSHIP, PRIVATE_LIMITED, OTHER] }
+        description: { type: string, minLength: 20, maxLength: 2000 }
+        contactEmail: { type: string, format: email, maxLength: 254 }
+        contactPhone: { type: string, minLength: 7, maxLength: 30 }
+        addressLine1: { type: string, minLength: 3, maxLength: 160 }
+        addressLine2: { type: string, maxLength: 160 }
+        city: { type: string, minLength: 2, maxLength: 100 }
+        state: { type: string, minLength: 2, maxLength: 100 }
+        postalCode: { type: string, minLength: 2, maxLength: 24 }
+        country: { type: string, minLength: 2, maxLength: 80 }
+        slug: { type: string, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 80 }
+    AuthUser:
+      type: object
+      required: [id, email, displayName, role, emailVerified]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        role: { type: string, enum: [CUSTOMER, SELLER, SELLER_STAFF, MODERATOR, SUPPORT_AGENT, ADMIN, SUPER_ADMIN] }
+        emailVerified: { type: boolean }
+    CatalogCategory:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+    CatalogSeller:
+      type: object
+      required: [displayName, slug, status]
+      properties:
+        displayName: { type: string }
+        slug: { type: string }
+        status: { type: string, enum: [PENDING, VERIFIED, SUSPENDED] }
+    ProductImage:
+      type: object
+      required: [id, url, altText, sortOrder, isPrimary]
+      properties:
+        id: { type: string }
+        url: { type: string, format: uri }
+        altText: { type: [string, "null"] }
+        sortOrder: { type: integer, minimum: 0 }
+        isPrimary: { type: boolean }
+    ProductSpecification:
+      type: object
+      required: [id, name, value, sortOrder]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        value: { type: string }
+        sortOrder: { type: integer, minimum: 0 }
+    CatalogVariant:
+      type: object
+      required: [id, sku, name, priceMinor, stockOnHand]
+      properties:
+        id: { type: string }
+        sku: { type: string }
+        name: { type: string }
+        priceMinor: { type: [integer, "null"], minimum: 0 }
+        stockOnHand: { type: integer, minimum: 0 }
+    CatalogProduct:
+      type: object
+      required: [id, slug, name, description, images, specifications, basePriceMinor, currency, category, seller, variants, rating, reviewCount, stockOnHand, available]
+      properties:
+        id: { type: string }
+        slug: { type: string }
+        name: { type: string }
+        description: { type: string }
+        images:
+          type: array
+          items: { $ref: "#/components/schemas/ProductImage" }
+        specifications:
+          type: array
+          items: { $ref: "#/components/schemas/ProductSpecification" }
+        basePriceMinor: { type: integer, minimum: 0, description: Price in minor currency units; INR uses paise. }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        category: { $ref: "#/components/schemas/CatalogCategory" }
+        seller: { $ref: "#/components/schemas/CatalogSeller" }
+        variants:
+          type: array
+          items: { $ref: "#/components/schemas/CatalogVariant" }
+        rating: { type: [number, "null"], minimum: 0, maximum: 5 }
+        reviewCount: { type: integer, minimum: 0 }
+        stockOnHand: { type: integer, minimum: 0 }
+        available: { type: boolean }
+    SellerProductImageInput:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url: { type: string, format: uri, pattern: "^https://" }
+        altText: { type: [string, "null"], maxLength: 300 }
+        isPrimary: { type: boolean }
+    SellerProductSpecificationInput:
+      type: object
+      required: [name, value]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        value: { type: string, minLength: 1, maxLength: 1000 }
+    SellerProductVariantInput:
+      type: object
+      required: [sku, name, stockOnHand]
+      additionalProperties: false
+      properties:
+        sku: { type: string, minLength: 1, maxLength: 100 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        priceMinor: { type: [integer, "null"], minimum: 1, maximum: 2000000000 }
+        stockOnHand: { type: integer, minimum: 0 }
+        lowStockThreshold: { type: integer, minimum: 0, default: 5 }
+    SellerInventoryAdjustmentInput:
+      type: object
+      required: [quantityChange, reason]
+      additionalProperties: false
+      properties:
+        quantityChange: { type: integer, minimum: -2147483647, maximum: 2147483647, not: { const: 0 }, description: Signed stock delta; zero is rejected. }
+        reason: { type: string, enum: [RESTOCK, CORRECTION, DAMAGE, RETURN, OTHER] }
+        note: { type: string, minLength: 1, maxLength: 500, description: Required for CORRECTION, DAMAGE and OTHER. }
+    SellerLowStockThresholdInput:
+      type: object
+      required: [lowStockThreshold]
+      additionalProperties: false
+      properties:
+        lowStockThreshold: { type: integer, minimum: 0, maximum: 2147483647, default: 5 }
+    SellerProductCreate:
+      type: object
+      required: [name, description, categoryId, basePriceMinor, images, variants]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        description: { type: string, minLength: 10, maxLength: 10000 }
+        categoryId: { type: string }
+        basePriceMinor: { type: integer, minimum: 1, maximum: 2000000000, description: Price in minor units; INR uses paise. }
+        currency: { type: string, pattern: "^[A-Z]{3}$", default: INR }
+        images:
+          type: array
+          minItems: 1
+          maxItems: 12
+          items: { $ref: "#/components/schemas/SellerProductImageInput" }
+        specifications:
+          type: array
+          maxItems: 50
+          items: { $ref: "#/components/schemas/SellerProductSpecificationInput" }
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: "#/components/schemas/SellerProductVariantInput" }
+    SellerProductUpdate:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      description: Moderation and ownership fields are not writable. Empty images/specifications arrays clear those collections. Existing variant stock and low-stock threshold updates are rejected.
+      properties:
+        name: { type: string, minLength: 2, maxLength: 160 }
+        description: { type: string, minLength: 10, maxLength: 10000 }
+        categoryId: { type: string }
+        basePriceMinor: { type: integer, minimum: 1, maximum: 2000000000 }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        status: { type: string, enum: [DRAFT, PUBLISHED] }
+        images:
+          type: array
+          maxItems: 12
+          items: { $ref: "#/components/schemas/SellerProductImageInput" }
+        specifications:
+          type: array
+          maxItems: 50
+          items: { $ref: "#/components/schemas/SellerProductSpecificationInput" }
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/SellerProductVariantAppend"
+              - $ref: "#/components/schemas/SellerProductVariantEdit"
+    SellerProductVariantAppend:
+      type: object
+      required: [sku, name]
+      additionalProperties: false
+      properties:
+        sku: { type: string, minLength: 1, maxLength: 100 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        priceMinor: { type: [integer, "null"], minimum: 1, maximum: 2000000000 }
+        stockOnHand: { type: integer, minimum: 0, default: 0 }
+        lowStockThreshold: { type: integer, minimum: 0, default: 5 }
+    SellerProductVariantEdit:
+      type: object
+      required: [id]
+      minProperties: 2
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        sku: { type: string, minLength: 1, maxLength: 100 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        priceMinor: { type: [integer, "null"], minimum: 1, maximum: 2000000000 }
+    ProductListResponse:
+      type: object
+      required: [items, pagination]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CatalogProduct" }
+        pagination:
+          type: object
+          required: [page, pageSize, total, pages]
+          properties:
+            page: { type: integer, minimum: 1 }
+            pageSize: { type: integer, minimum: 1, maximum: 50 }
+            total: { type: integer, minimum: 0 }
+            pages: { type: integer, minimum: 0 }
+    ProductCategoriesResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/CatalogCategory"
+              - type: object
+                required: [productCount]
+                properties:
+                  productCount: { type: integer, minimum: 0 }
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
