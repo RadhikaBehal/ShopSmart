@@ -2,7 +2,7 @@ import { app } from './app.js'
 import { prisma } from './db.js'
 
 const port = Number(process.env.PORT ?? 4000)
-const server = app.listen(port, () => {
+const server = app.listen(port, '0.0.0.0', () => {
   console.info(`ShopSmart API listening on port ${port}`)
 })
 
